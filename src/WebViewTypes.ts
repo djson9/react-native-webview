@@ -84,6 +84,25 @@ export interface WebViewNativeEvent {
   lockIdentifier: number;
 }
 
+export interface IslandPoolDecisionNativeEvent {
+  decision: 'fresh_create' | 'reattach' | 'owner_transfer' | 'capacity_violation';
+  poolKeyPresent: boolean;
+  priorSeenKey: boolean;
+  priorParkedKey: boolean;
+  transferFailed: boolean;
+  durationMs: number;
+  slotId: 'slot-a' | 'slot-b' | 'invalid' | 'missing';
+  documentFamily: 'list' | 'thread' | 'automations' | 'unknown';
+  previousDocumentFamily: 'list' | 'thread' | 'automations' | 'unknown';
+  allocationGeneration: number;
+  allocationCount: number;
+  residentCount: number;
+  documentFamilyChanged: boolean;
+  replacement: boolean;
+}
+
+export type IslandPoolDecisionEvent = NativeSyntheticEvent<IslandPoolDecisionNativeEvent>;
+
 export interface WebViewNativeProgressEvent extends WebViewNativeEvent {
   progress: number;
 }
@@ -382,6 +401,17 @@ export interface WindowsWebViewProps extends WebViewSharedProps {
 }
 
 export interface IOSWebViewProps extends WebViewSharedProps {
+  /**
+   * Keeps the underlying WKWebView warm across unmount/remount cycles with the
+   * same key. Added by the Web Islands patch.
+   * @platform ios
+   */
+  poolKey?: string;
+  /** Bounded bootstrap compatibility for a fixed Web Island slot. */
+  poolDocumentFamily?: 'list' | 'thread' | 'automations';
+  /** Framework-owned warm-pool decision for this WebView attachment. */
+  onIslandPoolDecision?: (event: IslandPoolDecisionEvent) => void;
+
   /**
    * Does not store any data within the lifetime of the WebView.
    */

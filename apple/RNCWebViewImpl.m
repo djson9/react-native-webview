@@ -9,6 +9,7 @@
 #import <React/RCTConvert.h>
 #import <React/RCTAutoInsetsProtocol.h>
 #import "RNCWKProcessPoolManager.h"
+#import <QuartzCore/QuartzCore.h>
 #if !TARGET_OS_OSX
 #import <UIKit/UIKit.h>
 #else
@@ -20,6 +21,166 @@
 static NSTimer *keyboardTimer;
 static NSString *const HistoryShimName = @"ReactNativeHistoryShim";
 static NSString *const MessageHandlerName = @"ReactNativeWebView";
+
+// Web Islands: two process-alive records own every application WKWebView.
+// Route and surface names never participate in native ownership.
+@interface RNCWebIslandSlotRecord : NSObject
+@property (nonatomic, copy) NSString *slotId;
+@property (nonatomic, strong, nullable) WKWebView *webView;
+@property (nonatomic, weak, nullable) RNCWebViewImpl *owner;
+@property (nonatomic, copy, nullable) NSString *documentFamily;
+@property (nonatomic, assign) NSUInteger allocationGeneration;
+@property (nonatomic, assign) NSUInteger lastUseOrdering;
+@property (nonatomic, assign) BOOL parked;
+@end
+
+@implementation RNCWebIslandSlotRecord
+@end
+
+static NSUInteger RNCWebIslandsAllocationCount = 0;
+static NSUInteger RNCWebIslandsUseOrdering = 0;
+
+static NSMutableDictionary<NSString *, RNCWebIslandSlotRecord *> *RNCWebIslandSlots(void) {
+  static NSMutableDictionary *slots = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    slots = [NSMutableDictionary new];
+    for (NSString *slotId in @[@"slot-a", @"slot-b"]) {
+      RNCWebIslandSlotRecord *record = [RNCWebIslandSlotRecord new];
+      record.slotId = slotId;
+      slots[slotId] = record;
+    }
+  });
+  return slots;
+}
+
+static RNCWebIslandSlotRecord *RNCWebIslandSlot(NSString *slotId) {
+  return slotId.length > 0 ? RNCWebIslandSlots()[slotId] : nil;
+}
+
+static NSString *RNCWebIslandDocumentFamily(NSString *value) {
+  return [@[@"list", @"thread", @"automations"] containsObject:value] ? value : nil;
+}
+
+static NSUInteger RNCWebIslandsResidentCount(void) {
+  NSUInteger count = 0;
+  for (RNCWebIslandSlotRecord *record in RNCWebIslandSlots().allValues) {
+    if (record.webView != nil) count += 1;
+  }
+  return count;
+}
+
+static void RNCWebIslandsEmitDecision(
+  RNCWebViewImpl *view,
+  NSString *decision,
+  BOOL poolKeyPresent,
+  BOOL priorSeenKey,
+  BOOL priorParkedKey,
+  BOOL transferFailed,
+  RNCWebIslandSlotRecord *record,
+  NSString *previousDocumentFamily,
+  BOOL documentFamilyChanged,
+  BOOL replacement,
+  CFTimeInterval startedAt
+) {
+  NSTimeInterval durationMs = (CACurrentMediaTime() - startedAt) * 1000.0;
+  NSString *slotId = record.slotId ?: @"invalid";
+  NSString *currentDocumentFamily = record.documentFamily ?: @"unknown";
+  NSUInteger allocationGeneration = record.allocationGeneration;
+  NSUInteger allocationCount = RNCWebIslandsAllocationCount;
+  NSUInteger residentCount = RNCWebIslandsResidentCount();
+  __weak RNCWebViewImpl *weakView = view;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    RNCWebViewImpl *strongView = weakView;
+    if (strongView && strongView.onIslandPoolDecision) {
+      strongView.onIslandPoolDecision(@{
+        @"decision": decision,
+        @"poolKeyPresent": @(poolKeyPresent),
+        @"priorSeenKey": @(priorSeenKey),
+        @"priorParkedKey": @(priorParkedKey),
+        @"transferFailed": @(transferFailed),
+        @"durationMs": @(durationMs),
+        @"slotId": slotId,
+        @"documentFamily": currentDocumentFamily,
+        @"previousDocumentFamily": previousDocumentFamily ?: @"unknown",
+        @"allocationGeneration": @(allocationGeneration),
+        @"allocationCount": @(allocationCount),
+        @"residentCount": @(residentCount),
+        @"documentFamilyChanged": @(documentFamilyChanged),
+        @"replacement": @(replacement)
+      });
+    }
+  });
+}
+
+#if DEBUG
+static NSString *RNCWebIslandsProbeMode(void) {
+  NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
+  NSUInteger index = [arguments indexOfObject:@"-ACPWebIslandPoolProbe"];
+  return index != NSNotFound && index + 1 < arguments.count ? arguments[index + 1] : nil;
+}
+
+static BOOL RNCWebIslandsApplyParkProbe(RNCWebIslandSlotRecord *record) {
+  static BOOL applied = NO;
+  NSString *mode = RNCWebIslandsProbeMode();
+  if (applied || record == nil ||
+      !([mode isEqualToString:@"evict-after-park"] || [mode isEqualToString:@"unknown-fresh"])) {
+    return NO;
+  }
+  applied = YES;
+  record.webView = nil;
+  record.owner = nil;
+  record.parked = NO;
+  RCTLogWarn(@"[WebIslands] applied DEBUG pool probe mode=%@", mode);
+  return YES;
+}
+#endif
+
+static void RNCWebIslandsPostPoolEvent(
+  NSString *event,
+  NSString *slotId,
+  NSString *documentFamily,
+  NSUInteger allocationGeneration,
+  CFTimeInterval startedAt
+) {
+  NSUInteger residentCount = RNCWebIslandsResidentCount();
+  NSTimeInterval durationMs = (CACurrentMediaTime() - startedAt) * 1000.0;
+#if DEBUG
+  NSLog(
+    @"[WebIslands] event=%@ slot=%@ family=%@ allocationGeneration=%lu allocationCount=%lu residentCount=%lu durationMs=%.3f",
+    event,
+    slotId ?: @"missing",
+    documentFamily ?: @"unknown",
+    (unsigned long)allocationGeneration,
+    (unsigned long)RNCWebIslandsAllocationCount,
+    (unsigned long)residentCount,
+    durationMs
+  );
+#endif
+  [[NSNotificationCenter defaultCenter] postNotificationName:@"RNCWebIslandsPoolEvent"
+                                                      object:nil
+                                                    userInfo:@{
+    @"event": event,
+    @"poolKey": slotId ?: @"missing",
+    @"slotId": slotId ?: @"missing",
+    @"documentFamily": documentFamily ?: @"unknown",
+    @"allocationGeneration": @(allocationGeneration),
+    @"allocationCount": @(RNCWebIslandsAllocationCount),
+    @"residentCount": @(residentCount),
+    @"durationMs": @(durationMs)
+  }];
+}
+
+#if DEBUG
+static void RNCWebIslandsApplyThirdSlotProbe(CFTimeInterval startedAt) {
+  static BOOL applied = NO;
+  if (applied || ![RNCWebIslandsProbeMode() isEqualToString:@"third-slot"] ||
+      RNCWebIslandsAllocationCount < 2) return;
+  applied = YES;
+  RNCWebIslandsPostPoolEvent(@"pool.capacity_violation", @"invalid", @"unknown", 0, startedAt);
+  RCTLogWarn(@"[WebIslands] rejected DEBUG third-slot probe without allocating");
+}
+#endif
 static NSURLCredential* clientAuthenticationCredential;
 static NSDictionary* customCertificatesForHost;
 
@@ -515,8 +676,136 @@ RCTAutoInsetsProtocol>
 - (void)didMoveToWindow
 {
   if (self.window != nil && _webView == nil) {
+    CFTimeInterval poolOperationStartedAt = CACurrentMediaTime();
+    BOOL poolKeyPresent = _poolKey.length > 0;
+    RNCWebIslandSlotRecord *record = RNCWebIslandSlot(_poolKey);
+    NSString *requestedDocumentFamily = RNCWebIslandDocumentFamily(_poolDocumentFamily);
+    if (record == nil || requestedDocumentFamily == nil) {
+      RNCWebIslandSlotRecord *invalidRecord = [RNCWebIslandSlotRecord new];
+      invalidRecord.slotId = record != nil ? record.slotId : (poolKeyPresent ? @"invalid" : @"missing");
+      invalidRecord.documentFamily = requestedDocumentFamily ?: @"unknown";
+      RNCWebIslandsPostPoolEvent(
+        @"pool.capacity_violation",
+        invalidRecord.slotId,
+        invalidRecord.documentFamily,
+        0,
+        poolOperationStartedAt
+      );
+      RNCWebIslandsEmitDecision(
+        self, @"capacity_violation", poolKeyPresent, NO, NO, NO,
+        invalidRecord, @"unknown", NO, NO, poolOperationStartedAt
+      );
+      RCTLogError(@"[WebIslands] rejected missing or invalid slot/family");
+      return;
+    }
+    BOOL priorSeenKey = record.allocationGeneration > 0;
+    BOOL priorParkedKey = record.parked && record.webView != nil;
+    BOOL transferFailed = NO;
+    BOOL ownerTransfer = NO;
+    RNCWKWebView *warmWebView = (RNCWKWebView *)record.webView;
+    RNCWebViewImpl *existingOwner = record.owner;
+    if (existingOwner != nil && existingOwner != self && existingOwner->_webView != nil) {
+      // React Navigation can overlap two same-key Fabric views. Transfer the
+      // live WKWebView immediately so the incoming view does not load the
+      // cached source URL while the outgoing owner is still on screen.
+      RNCWebIslandsPostPoolEvent(
+        @"pool.double_claim", record.slotId, record.documentFamily,
+        record.allocationGeneration, poolOperationStartedAt
+      );
+      warmWebView = (RNCWKWebView *)existingOwner->_webView;
+      ownerTransfer = YES;
+      [warmWebView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
+      [warmWebView.configuration.userContentController removeScriptMessageHandlerForName:MessageHandlerName];
+      [warmWebView removeObserver:existingOwner forKeyPath:@"estimatedProgress"];
+      [warmWebView removeFromSuperview];
+#if !TARGET_OS_OSX
+      warmWebView.scrollView.delegate = nil;
+#endif
+      warmWebView.navigationDelegate = nil;
+      warmWebView.UIDelegate = nil;
+      existingOwner->_webView = nil;
+      record.owner = nil;
+      RCTLogWarn(@"[WebIslands] transferred in-use view after double claim slot=%@", record.slotId);
+    } else if (existingOwner != nil && existingOwner != self) {
+      transferFailed = YES;
+      record.owner = nil;
+    }
+    // Web Islands: reattach a parked warm WKWebView and skip a fresh load.
+    if (warmWebView != nil) {
+      NSString *previousDocumentFamily = record.documentFamily ?: @"unknown";
+      BOOL documentFamilyChanged = record.documentFamily.length > 0 &&
+        ![record.documentFamily isEqualToString:requestedDocumentFamily];
+      record.owner = self;
+      record.parked = NO;
+      record.documentFamily = requestedDocumentFamily;
+      record.lastUseOrdering = ++RNCWebIslandsUseOrdering;
+      _webView = warmWebView;
+      _webView.frame = self.bounds;
+      [_webView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
+      [_webView.configuration.userContentController removeScriptMessageHandlerForName:MessageHandlerName];
+      @try {
+        [_webView.configuration.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self] name:HistoryShimName];
+        [_webView.configuration.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self] name:MessageHandlerName];
+      } @catch (NSException *exception) {
+        RCTLogWarn(@"[WebIslands] handler re-add failed: %@", exception);
+      }
+      [_webView addObserver:self forKeyPath:@"estimatedProgress" options:NSKeyValueObservingOptionOld | NSKeyValueObservingOptionNew context:nil];
+      _webView.UIDelegate = self;
+      _webView.navigationDelegate = self;
+#if !TARGET_OS_OSX
+      _webView.scrollView.delegate = self;
+#endif
+      _webView.allowsLinkPreview = _allowsLinkPreview;
+      _webView.allowsBackForwardNavigationGestures = _allowsBackForwardNavigationGestures;
+      [self setBackgroundColor:_savedBackgroundColor];
+      [self addSubview:_webView];
+
+      if (documentFamilyChanged) {
+        // Cross-family reuse replaces the document once while retaining the
+        // slot's WKWebView object and allocation generation.
+        [self visitSource];
+      } else {
+        // Same-family reattach has no navigation event. Emit loadingFinish on
+        // the next runloop so JS can replay island.nav after owner transfer.
+        __weak RNCWebViewImpl *weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          RNCWebViewImpl *strongSelf = weakSelf;
+          if (strongSelf && strongSelf->_onLoadingFinish) {
+            strongSelf->_onLoadingFinish([strongSelf baseEvent]);
+          }
+        });
+      }
+      RNCWebIslandsPostPoolEvent(
+        documentFamilyChanged ? @"pool.slot_repurpose" : @"pool.reattach",
+        record.slotId, record.documentFamily, record.allocationGeneration,
+        poolOperationStartedAt
+      );
+      RNCWebIslandsEmitDecision(
+        self,
+        ownerTransfer ? @"owner_transfer" : @"reattach",
+        poolKeyPresent,
+        priorSeenKey,
+        priorParkedKey,
+        NO,
+        record,
+        previousDocumentFamily,
+        documentFamilyChanged,
+        NO,
+        poolOperationStartedAt
+      );
+      RCTLogWarn(@"[WebIslands] reattached slot=%@ family=%@", record.slotId, record.documentFamily);
+      return;
+    }
     WKWebViewConfiguration *wkWebViewConfig = [self setUpWkWebViewConfig];
     _webView = [[RNCWKWebView alloc] initWithFrame:self.bounds configuration: wkWebViewConfig];
+    BOOL replacement = record.allocationGeneration > 0;
+    NSString *previousDocumentFamily = record.documentFamily ?: @"unknown";
+    record.owner = self;
+    record.webView = _webView;
+    record.parked = NO;
+    record.documentFamily = requestedDocumentFamily;
+    record.allocationGeneration = ++RNCWebIslandsAllocationCount;
+    record.lastUseOrdering = ++RNCWebIslandsUseOrdering;
     [self setBackgroundColor: _savedBackgroundColor];
 #if !TARGET_OS_OSX
     // Apply once at creation time. The prop is documented as non-reactive —
@@ -589,6 +878,27 @@ RCTAutoInsetsProtocol>
     [self setHideKeyboardAccessoryView: _savedHideKeyboardAccessoryView];
     [self setKeyboardDisplayRequiresUserAction: _savedKeyboardDisplayRequiresUserAction];
     [self visitSource];
+    RNCWebIslandsPostPoolEvent(
+      replacement ? @"pool.object_replacement" : @"pool.fresh_create",
+      record.slotId, record.documentFamily, record.allocationGeneration,
+      poolOperationStartedAt
+    );
+    RNCWebIslandsEmitDecision(
+      self,
+      @"fresh_create",
+      poolKeyPresent,
+      priorSeenKey,
+      priorParkedKey,
+      transferFailed,
+      record,
+      previousDocumentFamily,
+      NO,
+      replacement,
+      poolOperationStartedAt
+    );
+#if DEBUG
+    RNCWebIslandsApplyThirdSlotProbe(poolOperationStartedAt);
+#endif
   }
 
 #if !TARGET_OS_OSX
@@ -627,6 +937,38 @@ RCTAutoInsetsProtocol>
 - (void)removeFromSuperview
 #endif
 {
+  // Web Islands: park the warm WKWebView instead of destroying it. Fabric
+  // reaches this through RNCWebView.prepareForRecycle; Paper reaches it from
+  // removeFromSuperview.
+  RNCWebIslandSlotRecord *record = RNCWebIslandSlot(_poolKey);
+  if (record != nil && _webView && record.owner == self && record.webView == _webView) {
+    CFTimeInterval poolOperationStartedAt = CACurrentMediaTime();
+    record.owner = nil;
+    record.parked = YES;
+    record.lastUseOrdering = ++RNCWebIslandsUseOrdering;
+    [_webView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
+    [_webView.configuration.userContentController removeScriptMessageHandlerForName:MessageHandlerName];
+    [_webView removeObserver:self forKeyPath:@"estimatedProgress"];
+    [_webView removeFromSuperview];
+#if !TARGET_OS_OSX
+    _webView.scrollView.delegate = nil;
+#endif
+    _webView.navigationDelegate = nil;
+    _webView.UIDelegate = nil;
+    RNCWebIslandsPostPoolEvent(
+      @"pool.park", record.slotId, record.documentFamily,
+      record.allocationGeneration, poolOperationStartedAt
+    );
+#if DEBUG
+    RNCWebIslandsApplyParkProbe(record);
+#endif
+    RCTLogWarn(@"[WebIslands] parked warm view slot=%@", record.slotId);
+    _webView = nil;
+#ifndef RCT_NEW_ARCH_ENABLED
+    [super removeFromSuperview];
+#endif
+    return;
+  }
   if (_webView) {
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:MessageHandlerName];

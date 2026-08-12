@@ -204,6 +204,28 @@ static inline std::string nullSafeStringWithLength(id value) {
                 webViewEventEmitter->onContentProcessDidTerminate(data);
             }
         };
+        _view.onIslandPoolDecision = [self](NSDictionary* dictionary) {
+            if (_eventEmitter) {
+                auto webViewEventEmitter = std::static_pointer_cast<RNCWebViewEventEmitter const>(_eventEmitter);
+                facebook::react::RNCWebViewEventEmitter::OnIslandPoolDecision data = {
+                    .decision = nullSafeString([dictionary valueForKey:@"decision"]),
+                    .poolKeyPresent = static_cast<bool>([[dictionary valueForKey:@"poolKeyPresent"] boolValue]),
+                    .priorSeenKey = static_cast<bool>([[dictionary valueForKey:@"priorSeenKey"] boolValue]),
+                    .priorParkedKey = static_cast<bool>([[dictionary valueForKey:@"priorParkedKey"] boolValue]),
+                    .transferFailed = static_cast<bool>([[dictionary valueForKey:@"transferFailed"] boolValue]),
+                    .durationMs = [[dictionary valueForKey:@"durationMs"] doubleValue],
+                    .slotId = nullSafeString([dictionary valueForKey:@"slotId"]),
+                    .documentFamily = nullSafeString([dictionary valueForKey:@"documentFamily"]),
+                    .previousDocumentFamily = nullSafeString([dictionary valueForKey:@"previousDocumentFamily"]),
+                    .allocationGeneration = [[dictionary valueForKey:@"allocationGeneration"] doubleValue],
+                    .allocationCount = [[dictionary valueForKey:@"allocationCount"] doubleValue],
+                    .residentCount = [[dictionary valueForKey:@"residentCount"] doubleValue],
+                    .documentFamilyChanged = static_cast<bool>([[dictionary valueForKey:@"documentFamilyChanged"] boolValue]),
+                    .replacement = static_cast<bool>([[dictionary valueForKey:@"replacement"] boolValue])
+                };
+                webViewEventEmitter->onIslandPoolDecision(data);
+            }
+        };
         _view.onCustomMenuSelection = [self](NSDictionary* dictionary) {
             if (_eventEmitter) {
                 auto webViewEventEmitter = std::static_pointer_cast<RNCWebViewEventEmitter const>(_eventEmitter);
@@ -315,6 +337,8 @@ static inline std::string nullSafeStringWithLength(id value) {
     REMAP_WEBVIEW_PROP(allowsLinkPreview)
     REMAP_WEBVIEW_STRING_PROP(allowingReadAccessToURL)
     REMAP_WEBVIEW_PROP(messagingEnabled)
+    REMAP_WEBVIEW_STRING_PROP(poolKey)
+    REMAP_WEBVIEW_STRING_PROP(poolDocumentFamily)
     #if !TARGET_OS_OSX
     REMAP_WEBVIEW_PROP(fraudulentWebsiteWarningEnabled)
     #endif // !TARGET_OS_OSX

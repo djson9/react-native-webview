@@ -63,6 +63,11 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 @property (nonatomic, copy) RCTDirectEventBlock onMessage;
 @property (nonatomic, copy) RCTDirectEventBlock onScroll;
 @property (nonatomic, copy) RCTDirectEventBlock onContentProcessDidTerminate;
+@property (nonatomic, copy) RCTDirectEventBlock onIslandPoolDecision;
+// Web Islands: identifies which warm WKWebView to park/reattach.
+@property (nonatomic, copy) NSString * _Nullable poolKey;
+// Web Islands: bounded document compatibility for a fixed two-slot owner.
+@property (nonatomic, copy) NSString * _Nullable poolDocumentFamily;
 @property (nonatomic, copy) RCTDirectEventBlock onOpenWindow;
 
 

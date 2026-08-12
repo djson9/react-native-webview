@@ -41,6 +41,8 @@ RCT_EXPORT_MODULE(RNCWebView)
 }
 
 RCT_EXPORT_VIEW_PROPERTY(source, NSDictionary)
+RCT_EXPORT_VIEW_PROPERTY(poolKey, NSString)
+RCT_EXPORT_VIEW_PROPERTY(poolDocumentFamily, NSString)
 // New arch only
 RCT_CUSTOM_VIEW_PROPERTY(newSource, NSDictionary, RNCWebViewImpl) {}
 RCT_EXPORT_VIEW_PROPERTY(onFileDownload, RCTDirectEventBlock)
@@ -51,6 +53,7 @@ RCT_EXPORT_VIEW_PROPERTY(onLoadingProgress, RCTDirectEventBlock)
 RCT_EXPORT_VIEW_PROPERTY(onHttpError, RCTDirectEventBlock)
 RCT_EXPORT_VIEW_PROPERTY(onShouldStartLoadWithRequest, RCTDirectEventBlock)
 RCT_EXPORT_VIEW_PROPERTY(onContentProcessDidTerminate, RCTDirectEventBlock)
+RCT_EXPORT_VIEW_PROPERTY(onIslandPoolDecision, RCTDirectEventBlock)
 RCT_EXPORT_VIEW_PROPERTY(onOpenWindow, RCTDirectEventBlock)
 RCT_EXPORT_VIEW_PROPERTY(injectedJavaScript, NSString)
 RCT_EXPORT_VIEW_PROPERTY(injectedJavaScriptBeforeContentLoaded, NSString)
