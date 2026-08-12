@@ -17,7 +17,11 @@ Pod::Spec.new do |s|
 
   s.source       = { :git => "https://github.com/react-native-webview/react-native-webview.git", :tag => "v#{s.version}" }
 
-  s.source_files    = "apple/**/*.{h,m,mm,swift}"
+  # gh337: include the pure C++ pin-aware LRU decision core (.cpp/.hpp) but
+  # exclude its headless test harness (has a main()); it is exercised on the Mac
+  # via clang++ (see apple/RNCWebIslandLruCoreTests.cpp) and by the module selfTest.
+  s.source_files    = "apple/**/*.{h,hpp,m,mm,swift,cpp}"
+  s.exclude_files   = "apple/**/*Tests.cpp"
 
   if defined?(install_modules_dependencies()) != nil
     install_modules_dependencies(s);

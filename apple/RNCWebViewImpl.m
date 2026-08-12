@@ -9,6 +9,7 @@
 #import <React/RCTConvert.h>
 #import <React/RCTAutoInsetsProtocol.h>
 #import "RNCWKProcessPoolManager.h"
+#import "RNCWebIslandRuntimeSupport.h"
 #import <QuartzCore/QuartzCore.h>
 #if !TARGET_OS_OSX
 #import <UIKit/UIKit.h>
@@ -30,7 +31,16 @@ static NSString *const MessageHandlerName = @"ReactNativeWebView";
 @property (nonatomic, weak, nullable) RNCWebViewImpl *owner;
 @property (nonatomic, copy, nullable) NSString *documentFamily;
 @property (nonatomic, assign) NSUInteger allocationGeneration;
+// gh337: lease generation, bumped every time a new owner takes the slot (fresh
+// create, eviction/replacement, or reattach). With allocationGeneration and
+// slotId it forms the generation identity the owned runtime binding advertises
+// and that gates stale callbacks (native/src/web-islands/runtimeProtocol.ts).
+@property (nonatomic, assign) NSUInteger leaseGeneration;
 @property (nonatomic, assign) NSUInteger lastUseOrdering;
+// gh337: bounded native presentation-state string mirroring
+// WebIslandPresentationState (incoming | committed_visible | outgoing | parked |
+// revoked). Advertised to JS through RNCWebIslandRuntimeModule.getBinding.
+@property (nonatomic, copy, nullable) NSString *presentationState;
 @property (nonatomic, assign) BOOL parked;
 @end
 
@@ -39,6 +49,8 @@ static NSString *const MessageHandlerName = @"ReactNativeWebView";
 
 static NSUInteger RNCWebIslandsAllocationCount = 0;
 static NSUInteger RNCWebIslandsUseOrdering = 0;
+// gh337: monotonic lease counter (see RNCWebIslandSlotRecord.leaseGeneration).
+static NSUInteger RNCWebIslandsLeaseCount = 0;
 
 static NSMutableDictionary<NSString *, RNCWebIslandSlotRecord *> *RNCWebIslandSlots(void) {
   static NSMutableDictionary *slots = nil;
@@ -111,6 +123,64 @@ static void RNCWebIslandsEmitDecision(
       });
     }
   });
+}
+
+// gh337 #338 native tuple binding: build the generation-rich binding the owned
+// runtime advertises for a slot, shaped exactly as
+// native/src/web-islands/runtimeProtocol.ts:normalizeNativeBinding expects.
+// Returns nil for an unallocated/invalid slot so JS fails closed to a null
+// binding (no delivery tuple, legacy island.nav path).
+NSDictionary *RNCWebIslandSlotBindingDictionary(NSString *slotId) {
+  RNCWebIslandSlotRecord *record = RNCWebIslandSlot(slotId);
+  if (record == nil || record.allocationGeneration == 0 || record.leaseGeneration == 0) {
+    return nil;
+  }
+  NSString *presentationState = record.presentationState;
+  NSArray<NSString *> *pinReasons = @[];
+  if (record.parked || [presentationState isEqualToString:@"parked"]) {
+    presentationState = @"parked";
+    pinReasons = @[];
+  } else if ([presentationState isEqualToString:@"committed_visible"]) {
+    pinReasons = @[@"committed_visible"];
+  } else if ([presentationState isEqualToString:@"outgoing"]) {
+    pinReasons = @[@"outgoing_transition"];
+  } else {
+    // A live, on-window owner with no explicit park is the foreground view.
+    if (record.owner != nil && record.webView != nil && !record.parked) {
+      presentationState = @"committed_visible";
+      pinReasons = @[@"committed_visible"];
+    } else {
+      presentationState = presentationState.length > 0 ? presentationState : @"incoming";
+      if ([presentationState isEqualToString:@"incoming"]) pinReasons = @[@"incoming_transition"];
+    }
+  }
+  return @{
+    @"slotId": record.slotId ?: slotId,
+    @"allocationGeneration": @(record.allocationGeneration),
+    @"leaseGeneration": @(record.leaseGeneration),
+    @"presentationState": presentationState,
+    @"pinReasons": pinReasons,
+    @"lastUsedSequence": @(record.lastUseOrdering),
+  };
+}
+
+// gh337: the immutable capability block the owned runtime advertises in Debug and
+// Release, mirroring owned-runtime.json and satisfying
+// native/src/web-islands/runtimeProtocol.ts:negotiateCapabilities (pool protocol
+// major 1, capacity 2, the four required features).
+NSDictionary *RNCWebIslandRuntimeCapabilitiesDictionary(void) {
+  return @{
+    @"runtimeVersion": @"acp-rnw-14.0.1-owned.1",
+    @"poolProtocol": @{ @"major": @1, @"minor": @0 },
+    @"capacity": @2,
+    @"compatibilityKeys": @[@"list", @"thread", @"automations"],
+    @"features": @[
+      @"pin_aware_lru",
+      @"single_pending_foreground",
+      @"generation_gated_paint",
+      @"webcontent_generation",
+    ],
+  };
 }
 
 #if DEBUG
@@ -287,6 +357,9 @@ RCTAutoInsetsProtocol>
 @property (nonatomic, strong) WKUserScript *injectedObjectJsonScript;
 @property (nonatomic, strong) WKUserScript *atStartScript;
 @property (nonatomic, strong) WKUserScript *atEndScript;
+// gh337 #338: install the armed document-start props bootstrap (if any) before
+// the source visit on a fresh allocation.
+- (void)islandInstallDocumentStartBootstrapIfArmed;
 @end
 
 @implementation RNCWebViewImpl
@@ -313,6 +386,9 @@ RCTAutoInsetsProtocol>
 #if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 130000 /* __IPHONE_13_0 */
   BOOL _savedAutomaticallyAdjustsScrollIndicatorInsets;
 #endif
+  // gh337 #338: the owned runtime's armed document-start props bootstrap for the
+  // NEXT fresh allocation of this attachment (installed once, then cleared).
+  NSString *_islandArmedBootstrap;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame
@@ -739,6 +815,9 @@ RCTAutoInsetsProtocol>
       record.parked = NO;
       record.documentFamily = requestedDocumentFamily;
       record.lastUseOrdering = ++RNCWebIslandsUseOrdering;
+      // gh337: reattaching a warm view is a new lease on the retained allocation.
+      record.leaseGeneration = ++RNCWebIslandsLeaseCount;
+      record.presentationState = @"incoming";
       _webView = warmWebView;
       _webView.frame = self.bounds;
       [_webView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
@@ -805,7 +884,16 @@ RCTAutoInsetsProtocol>
     record.parked = NO;
     record.documentFamily = requestedDocumentFamily;
     record.allocationGeneration = ++RNCWebIslandsAllocationCount;
+    // gh337: fresh allocation (or WebContent replacement) is a new lease on a
+    // fresh allocation generation, which invalidates any prior painted state.
+    record.leaseGeneration = ++RNCWebIslandsLeaseCount;
+    record.presentationState = @"incoming";
     record.lastUseOrdering = ++RNCWebIslandsUseOrdering;
+    // gh337 #338 cold-bootstrap hook: install the owned runtime's document-start
+    // props bootstrap (if the owner supplied one) BEFORE the source visit, so a
+    // cold allocation can render from in-memory props with no fetch. No-op unless
+    // the owned coordinator armed a bootstrap for this attachment.
+    [self islandInstallDocumentStartBootstrapIfArmed];
     [self setBackgroundColor: _savedBackgroundColor];
 #if !TARGET_OS_OSX
     // Apply once at creation time. The prop is documented as non-reactive —
@@ -945,6 +1033,7 @@ RCTAutoInsetsProtocol>
     CFTimeInterval poolOperationStartedAt = CACurrentMediaTime();
     record.owner = nil;
     record.parked = YES;
+    record.presentationState = @"parked";  // gh337: releases the presentation pin.
     record.lastUseOrdering = ++RNCWebIslandsUseOrdering;
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:MessageHandlerName];
@@ -1188,6 +1277,49 @@ RCTAutoInsetsProtocol>
 #endif // !TARGET_OS_OSX
 }
 
+
+#pragma mark - gh337 #338 owned-runtime props hooks
+
+// Arm a document-start props bootstrap to be installed on the NEXT fresh
+// allocation of this attachment. The owned coordinator calls this before the
+// source visit so a cold island renders from in-memory props with no fetch.
+- (void)islandArmDocumentStartBootstrap:(NSString *)source
+{
+  _islandArmedBootstrap = [source copy];
+}
+
+// Install the armed bootstrap (if any) as a main-frame document-start user
+// script, then clear the arm. Invoked from the fresh-allocation path in
+// didMoveToWindow BEFORE visitSource. A no-op when nothing is armed, so the
+// legacy path is byte-for-byte unchanged.
+- (void)islandInstallDocumentStartBootstrapIfArmed
+{
+  if (_islandArmedBootstrap.length == 0 || _webView == nil) {
+    return;
+  }
+  WKUserScript *bootstrap =
+    [[WKUserScript alloc] initWithSource:_islandArmedBootstrap
+                           injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                        forMainFrameOnly:YES];
+  [_webView.configuration.userContentController addUserScript:bootstrap];
+  _islandArmedBootstrap = nil;
+}
+
+// Evaluate exactly one warm props update in the page world of a RESIDENT island
+// (no reload). The owned coordinator calls this for a warm delivery after a
+// same-lease supersession; readiness is gated on the exact applied+painted tuple
+// on the JS side (native/src/web-islands/propsController.ts).
+- (void)islandEvaluatePropsUpdate:(NSString *)source
+                       completion:(void (^ _Nullable)(BOOL delivered))completion
+{
+  if (source.length == 0 || _webView == nil) {
+    if (completion) completion(NO);
+    return;
+  }
+  [_webView evaluateJavaScript:source completionHandler:^(id result, NSError *error) {
+    if (completion) completion(error == nil);
+  }];
+}
 
 - (void)visitSource
 {

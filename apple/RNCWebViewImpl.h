@@ -70,6 +70,14 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 @property (nonatomic, copy) NSString * _Nullable poolDocumentFamily;
 @property (nonatomic, copy) RCTDirectEventBlock onOpenWindow;
 
+// gh337 #338 owned-runtime props hooks. Arm a document-start props bootstrap for
+// the next fresh allocation (installed before the source visit), and evaluate a
+// single warm props update in the page world of a resident island. Both are
+// no-ops until the owned coordinator drives them; the legacy path is unchanged.
+- (void)islandArmDocumentStartBootstrap:(NSString * _Nullable)source;
+- (void)islandEvaluatePropsUpdate:(NSString * _Nullable)source
+                       completion:(void (^ _Nullable)(BOOL delivered))completion;
+
 
 @property (nonatomic, weak) id<RNCWebViewDelegate> _Nullable delegate;
 @property (nonatomic, copy) NSDictionary * _Nullable source;
