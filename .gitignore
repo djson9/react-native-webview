@@ -54,7 +54,10 @@ android/gradle
 android/gradlew
 android/gradlew.bat
 
-lib/
+# gh337 owned fork: lib/ is committed so `npm install github:djson9/react-native-webview#<sha>`
+# yields a ready package without needing bun/tsgo on the consumer machine.
+# (Upstream ignores lib/ and rebuilds it in the `prepare` lifecycle script.)
+# lib/
 .classpath
 .project
 .settings/
