@@ -357,9 +357,9 @@ RCTAutoInsetsProtocol>
 @property (nonatomic, strong) WKUserScript *injectedObjectJsonScript;
 @property (nonatomic, strong) WKUserScript *atStartScript;
 @property (nonatomic, strong) WKUserScript *atEndScript;
-// gh337 #338: install the armed document-start props bootstrap (if any) before
-// the source visit on a fresh allocation.
-- (void)islandInstallDocumentStartBootstrapIfArmed;
+// gh337 #338: install an explicit arm or derive the exact document-start props
+// bootstrap from the fresh allocation before its source visit.
+- (void)islandInstallDocumentStartBootstrapForRecord:(RNCWebIslandSlotRecord *)record;
 @end
 
 @implementation RNCWebViewImpl
@@ -890,10 +890,10 @@ RCTAutoInsetsProtocol>
     record.presentationState = @"incoming";
     record.lastUseOrdering = ++RNCWebIslandsUseOrdering;
     // gh337 #338 cold-bootstrap hook: install the owned runtime's document-start
-    // props bootstrap (if the owner supplied one) BEFORE the source visit, so a
-    // cold allocation can render from in-memory props with no fetch. No-op unless
-    // the owned coordinator armed a bootstrap for this attachment.
-    [self islandInstallDocumentStartBootstrapIfArmed];
+    // props bootstrap BEFORE the source visit, so a cold allocation can render
+    // from in-memory props with no fetch. The exact slot/allocation/lease values
+    // only exist here, after the record has been advanced.
+    [self islandInstallDocumentStartBootstrapForRecord:record];
     [self setBackgroundColor: _savedBackgroundColor];
 #if !TARGET_OS_OSX
     // Apply once at creation time. The prop is documented as non-reactive —
@@ -1288,17 +1288,74 @@ RCTAutoInsetsProtocol>
   _islandArmedBootstrap = [source copy];
 }
 
-// Install the armed bootstrap (if any) as a main-frame document-start user
-// script, then clear the arm. Invoked from the fresh-allocation path in
-// didMoveToWindow BEFORE visitSource. A no-op when nothing is armed, so the
-// legacy path is byte-for-byte unchanged.
-- (void)islandInstallDocumentStartBootstrapIfArmed
+// Complete the candidate carried by injectedJavaScriptObject with the exact
+// native allocation identity. This is intentionally done inside the fork:
+// React cannot know the fresh slot/allocation/lease tuple before didMoveToWindow.
+- (NSString *)islandExactBootstrapSourceForRecord:(RNCWebIslandSlotRecord *)record
 {
-  if (_islandArmedBootstrap.length == 0 || _webView == nil) {
-    return;
+  if (_injectedJavaScriptObject.length == 0 || record == nil ||
+      record.slotId.length == 0 || record.allocationGeneration == 0 ||
+      record.leaseGeneration == 0) {
+    return nil;
   }
+  NSData *inputData = [_injectedJavaScriptObject dataUsingEncoding:NSUTF8StringEncoding];
+  id raw = inputData ? [NSJSONSerialization JSONObjectWithData:inputData options:0 error:nil] : nil;
+  if (![raw isKindOfClass:[NSDictionary class]]) return nil;
+  id nestedCandidate = ((NSDictionary *)raw)[@"__acpThreadPropsBootstrapCandidate"];
+  if (![nestedCandidate isKindOfClass:[NSDictionary class]]) return nil;
+  NSDictionary *candidate = (NSDictionary *)nestedCandidate;
+  NSString *identifier = candidate[@"id"];
+  NSString *activationKey = candidate[@"activationKey"];
+  NSString *documentKey = candidate[@"documentKey"];
+  NSString *compatibilityKey = candidate[@"compatibilityKey"];
+  NSString *propsRevision = candidate[@"propsRevision"];
+  NSDictionary *envelope = candidate[@"envelope"];
+  BOOL stringsValid =
+    [identifier isKindOfClass:[NSString class]] && identifier.length > 0 &&
+    [activationKey isKindOfClass:[NSString class]] && activationKey.length > 0 &&
+    [documentKey isKindOfClass:[NSString class]] && [documentKey hasPrefix:@"/threads/"] &&
+    [compatibilityKey isKindOfClass:[NSString class]] && [compatibilityKey isEqualToString:@"thread"] &&
+    [propsRevision isKindOfClass:[NSString class]] && propsRevision.length == 71 &&
+    [propsRevision hasPrefix:@"sha256:"];
+  if (!stringsValid || ![envelope isKindOfClass:[NSDictionary class]] ||
+      ![envelope[@"documentKey"] isEqual:documentKey] ||
+      ![envelope[@"propsRevision"] isEqual:propsRevision]) {
+    return nil;
+  }
+
+  NSDictionary *tuple = @{
+    @"id": identifier,
+    @"activationKey": activationKey,
+    @"documentKey": documentKey,
+    @"compatibilityKey": compatibilityKey,
+    @"propsRevision": propsRevision,
+    @"slotId": record.slotId,
+    @"allocationGeneration": @(record.allocationGeneration),
+    @"leaseGeneration": @(record.leaseGeneration),
+  };
+  NSDictionary *bootstrap = @{
+    @"protocolVersion": @1,
+    @"tuple": tuple,
+    @"envelope": envelope,
+  };
+  NSData *bootstrapData = [NSJSONSerialization dataWithJSONObject:bootstrap options:0 error:nil];
+  if (bootstrapData == nil) return nil;
+  NSString *bootstrapJSON = [[NSString alloc] initWithData:bootstrapData encoding:NSUTF8StringEncoding];
+  if (bootstrapJSON.length == 0) return nil;
+  return [NSString stringWithFormat:
+    @"Object.defineProperty(globalThis,'__acpThreadPropsBootstrap',{configurable:true,value:{bootstrap:%@}});true;",
+    bootstrapJSON];
+}
+
+- (void)islandInstallDocumentStartBootstrapForRecord:(RNCWebIslandSlotRecord *)record
+{
+  if (_webView == nil) return;
+  NSString *source = _islandArmedBootstrap.length > 0
+    ? _islandArmedBootstrap
+    : [self islandExactBootstrapSourceForRecord:record];
+  if (source.length == 0) return;
   WKUserScript *bootstrap =
-    [[WKUserScript alloc] initWithSource:_islandArmedBootstrap
+    [[WKUserScript alloc] initWithSource:source
                            injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                         forMainFrameOnly:YES];
   [_webView.configuration.userContentController addUserScript:bootstrap];
