@@ -1,14 +1,14 @@
 {
-  "$comment": "gh337 owned-runtime fork marker. Presence of this file at the react-native-webview package root is how acp-web's runtime materializer (native/scripts/webIslandRuntimeCore.js -> assertExclusive) proves the maintained fork is installed rather than upstream+patch. The capability block mirrors what the native RNCWebIslandRuntimeModule advertises at runtime and what native/src/web-islands/runtimeProtocol.ts negotiates (SUPPORTED_POOL_PROTOCOL major 1, capacity 2, the four required features). Fail-closed: acp-web owned_lru requires this marker; legacy_patch requires its absence.",
-  "runtimeVersion": "acp-rnw-14.0.1-owned.1",
-  "poolProtocol": { "major": 1, "minor": 0 },
+  "$comment": "gh337 owned-runtime fork marker. Presence of this file at the react-native-webview package root is how acp-web's runtime materializer (native/scripts/webIslandRuntimeCore.js -> assertExclusive) proves the maintained fork is installed rather than upstream+patch. The capability block mirrors what the native RNCWebIslandRuntimeModule advertises at runtime and what native/src/web-islands/runtimeProtocol.ts negotiates (SUPPORTED_POOL_PROTOCOL major 1, capacity 2, and app-configurable document families). Fail-closed: acp-web owned_lru requires this marker; legacy_patch requires its absence.",
+  "runtimeVersion": "acp-rnw-14.0.1-owned.2",
+  "poolProtocol": { "major": 1, "minor": 1 },
   "capabilityMajor": 1,
   "capacity": 2,
-  "compatibilityKeys": ["list", "thread", "automations"],
   "features": [
     "pin_aware_lru",
     "single_pending_foreground",
     "generation_gated_paint",
-    "webcontent_generation"
+    "webcontent_generation",
+    "app_configured_compatibility_keys"
   ]
 }

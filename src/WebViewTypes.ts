@@ -92,8 +92,8 @@ export interface IslandPoolDecisionNativeEvent {
   transferFailed: boolean;
   durationMs: number;
   slotId: 'slot-a' | 'slot-b' | 'invalid' | 'missing';
-  documentFamily: 'list' | 'thread' | 'automations' | 'unknown';
-  previousDocumentFamily: 'list' | 'thread' | 'automations' | 'unknown';
+  documentFamily: string;
+  previousDocumentFamily: string;
   allocationGeneration: number;
   allocationCount: number;
   residentCount: number;
@@ -407,8 +407,12 @@ export interface IOSWebViewProps extends WebViewSharedProps {
    * @platform ios
    */
   poolKey?: string;
-  /** Bounded bootstrap compatibility for a fixed Web Island slot. */
-  poolDocumentFamily?: 'list' | 'thread' | 'automations';
+  /** Bounded application document families accepted by this Web Island view. */
+  poolDocumentFamilies?: readonly string[];
+  /** Requested document family, which must be in `poolDocumentFamilies`. */
+  poolDocumentFamily?: string;
+  /** Exact document key accepted for a document-start props bootstrap. */
+  poolDocumentKey?: string;
   /** Framework-owned warm-pool decision for this WebView attachment. */
   onIslandPoolDecision?: (event: IslandPoolDecisionEvent) => void;
 

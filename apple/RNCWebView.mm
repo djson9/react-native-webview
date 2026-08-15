@@ -338,7 +338,16 @@ static inline std::string nullSafeStringWithLength(id value) {
     REMAP_WEBVIEW_STRING_PROP(allowingReadAccessToURL)
     REMAP_WEBVIEW_PROP(messagingEnabled)
     REMAP_WEBVIEW_STRING_PROP(poolKey)
+    if (oldViewProps.poolDocumentFamilies != newViewProps.poolDocumentFamilies) {
+        NSMutableArray<NSString *> *documentFamilies =
+            [NSMutableArray arrayWithCapacity:newViewProps.poolDocumentFamilies.size()];
+        for (const auto &family: newViewProps.poolDocumentFamilies) {
+            [documentFamilies addObject:RCTNSStringFromString(family)];
+        }
+        _view.poolDocumentFamilies = documentFamilies;
+    }
     REMAP_WEBVIEW_STRING_PROP(poolDocumentFamily)
+    REMAP_WEBVIEW_STRING_PROP(poolDocumentKey)
     #if !TARGET_OS_OSX
     REMAP_WEBVIEW_PROP(fraudulentWebsiteWarningEnabled)
     #endif // !TARGET_OS_OSX

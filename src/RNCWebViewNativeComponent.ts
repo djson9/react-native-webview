@@ -226,7 +226,9 @@ export interface NativeProps extends ViewProps {
   >;
   pagingEnabled?: boolean;
   poolKey?: string;
+  poolDocumentFamilies?: ReadonlyArray<string>;
   poolDocumentFamily?: string;
+  poolDocumentKey?: string;
   pullToRefreshEnabled?: boolean;
   refreshControlLightMode?: boolean;
   removeIosKeyboardObserver?: WithDefault<boolean, false>;

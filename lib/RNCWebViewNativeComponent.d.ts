@@ -25,6 +25,22 @@ export type WebViewMessageEvent = Readonly<{
 export type WebViewOpenWindowEvent = Readonly<{
     targetUrl: string;
 }>;
+export type IslandPoolDecisionEvent = Readonly<{
+    decision: string;
+    poolKeyPresent: boolean;
+    priorSeenKey: boolean;
+    priorParkedKey: boolean;
+    transferFailed: boolean;
+    durationMs: Double;
+    slotId: string;
+    documentFamily: string;
+    previousDocumentFamily: string;
+    allocationGeneration: Double;
+    allocationCount: Double;
+    residentCount: Double;
+    documentFamilyChanged: boolean;
+    replacement: boolean;
+}>;
 export type WebViewHttpErrorEvent = Readonly<{
     url: string;
     loading: boolean;
@@ -164,6 +180,10 @@ export interface NativeProps extends ViewProps {
     limitsNavigationsToAppBoundDomains?: boolean;
     mediaCapturePermissionGrantType?: WithDefault<'prompt' | 'grant' | 'deny' | 'grantIfSameHostElsePrompt' | 'grantIfSameHostElseDeny', 'prompt'>;
     pagingEnabled?: boolean;
+    poolKey?: string;
+    poolDocumentFamilies?: ReadonlyArray<string>;
+    poolDocumentFamily?: string;
+    poolDocumentKey?: string;
     pullToRefreshEnabled?: boolean;
     refreshControlLightMode?: boolean;
     removeIosKeyboardObserver?: WithDefault<boolean, false>;
@@ -172,6 +192,7 @@ export interface NativeProps extends ViewProps {
     textInteractionEnabled?: WithDefault<boolean, true>;
     useSharedProcessPool?: WithDefault<boolean, true>;
     onContentProcessDidTerminate?: DirectEventHandler<WebViewNativeEvent>;
+    onIslandPoolDecision?: DirectEventHandler<IslandPoolDecisionEvent>;
     onCustomMenuSelection?: DirectEventHandler<WebViewCustomMenuSelectionEvent>;
     onFileDownload?: DirectEventHandler<WebViewDownloadEvent>;
     menuItems?: ReadonlyArray<Readonly<{
