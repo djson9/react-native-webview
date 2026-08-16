@@ -66,8 +66,11 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 @property (nonatomic, copy) RCTDirectEventBlock onIslandPoolDecision;
 // Web Islands: identifies which warm WKWebView to park/reattach.
 @property (nonatomic, copy) NSString * _Nullable poolKey;
-// Web Islands: bounded document compatibility for a fixed two-slot owner.
+// Web Islands: app-supplied bounded document compatibility for a fixed
+// two-slot owner.
+@property (nonatomic, copy) NSArray<NSString *> * _Nullable poolDocumentFamilies;
 @property (nonatomic, copy) NSString * _Nullable poolDocumentFamily;
+@property (nonatomic, copy) NSString * _Nullable poolDocumentKey;
 @property (nonatomic, copy) RCTDirectEventBlock onOpenWindow;
 
 // gh337 #338 owned-runtime props hooks. Arm a document-start props bootstrap for

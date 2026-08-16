@@ -17,7 +17,8 @@ NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSDictionary *_Nullable RNCWebIslandSlotBindingDictionary(NSString *slotId);
 
 /// The immutable capability block the owned runtime advertises in Debug and
-/// Release (pool protocol major 1, capacity 2, the four required features).
+/// Release (pool protocol major 1, capacity 2, and app-configurable document
+/// families supplied through each WebView's pool props).
 FOUNDATION_EXPORT NSDictionary *RNCWebIslandRuntimeCapabilitiesDictionary(void);
 
 NS_ASSUME_NONNULL_END

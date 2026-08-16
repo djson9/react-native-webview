@@ -83,11 +83,11 @@ RCT_EXPORT_METHOD(selfTest:(RCTPromiseResolveBlock)resolve
     model.paint(who, c.currentTuple());
   };
 
-  auto a = model.requestActivation(request("list", "list-a", "/l", "list"));
+  auto a = model.requestActivation(request("summary", "summary-a", "/s", "summary"));
   present(a.slotId);
-  auto b = model.requestActivation(request("thread", "thread-b", "/t/b", "thread"));
+  auto b = model.requestActivation(request("detail", "detail-b", "/d/b", "detail"));
   present(b.slotId);
-  model.requestActivation(request("list", "list-a", "/l", "list"));
+  model.requestActivation(request("summary", "summary-a", "/s", "summary"));
   present(a.slotId);  // A now most-recent.
 
   std::string why;

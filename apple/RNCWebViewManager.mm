@@ -42,7 +42,9 @@ RCT_EXPORT_MODULE(RNCWebView)
 
 RCT_EXPORT_VIEW_PROPERTY(source, NSDictionary)
 RCT_EXPORT_VIEW_PROPERTY(poolKey, NSString)
+RCT_EXPORT_VIEW_PROPERTY(poolDocumentFamilies, NSArray)
 RCT_EXPORT_VIEW_PROPERTY(poolDocumentFamily, NSString)
+RCT_EXPORT_VIEW_PROPERTY(poolDocumentKey, NSString)
 // New arch only
 RCT_CUSTOM_VIEW_PROPERTY(newSource, NSDictionary, RNCWebViewImpl) {}
 RCT_EXPORT_VIEW_PROPERTY(onFileDownload, RCTDirectEventBlock)

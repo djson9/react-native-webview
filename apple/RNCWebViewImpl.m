@@ -70,8 +70,22 @@ static RNCWebIslandSlotRecord *RNCWebIslandSlot(NSString *slotId) {
   return slotId.length > 0 ? RNCWebIslandSlots()[slotId] : nil;
 }
 
-static NSString *RNCWebIslandDocumentFamily(NSString *value) {
-  return [@[@"list", @"thread", @"automations"] containsObject:value] ? value : nil;
+static NSArray<NSString *> *RNCWebIslandDocumentFamilies(id value) {
+  if (![value isKindOfClass:[NSArray class]]) return nil;
+  NSArray *candidates = (NSArray *)value;
+  if (candidates.count == 0 || candidates.count > 32) return nil;
+  NSMutableSet<NSString *> *unique = [NSMutableSet setWithCapacity:candidates.count];
+  for (id candidate in candidates) {
+    if (![candidate isKindOfClass:[NSString class]]) return nil;
+    NSString *family = (NSString *)candidate;
+    if (family.length == 0 || family.length > 64 || [unique containsObject:family]) return nil;
+    [unique addObject:family];
+  }
+  return [candidates copy];
+}
+
+static NSString *RNCWebIslandDocumentFamily(NSString *value, NSArray<NSString *> *families) {
+  return [value isKindOfClass:[NSString class]] && [families containsObject:value] ? value : nil;
 }
 
 static NSUInteger RNCWebIslandsResidentCount(void) {
@@ -167,18 +181,19 @@ NSDictionary *RNCWebIslandSlotBindingDictionary(NSString *slotId) {
 // gh337: the immutable capability block the owned runtime advertises in Debug and
 // Release, mirroring owned-runtime.json and satisfying
 // native/src/web-islands/runtimeProtocol.ts:negotiateCapabilities (pool protocol
-// major 1, capacity 2, the four required features).
+// major 1, capacity 2, and the required generic features). Application family
+// values are supplied and validated per view rather than compiled here.
 NSDictionary *RNCWebIslandRuntimeCapabilitiesDictionary(void) {
   return @{
-    @"runtimeVersion": @"acp-rnw-14.0.1-owned.1",
-    @"poolProtocol": @{ @"major": @1, @"minor": @0 },
+    @"runtimeVersion": @"acp-rnw-14.0.1-owned.2",
+    @"poolProtocol": @{ @"major": @1, @"minor": @1 },
     @"capacity": @2,
-    @"compatibilityKeys": @[@"list", @"thread", @"automations"],
     @"features": @[
       @"pin_aware_lru",
       @"single_pending_foreground",
       @"generation_gated_paint",
       @"webcontent_generation",
+      @"app_configured_compatibility_keys",
     ],
   };
 }
@@ -755,8 +770,9 @@ RCTAutoInsetsProtocol>
     CFTimeInterval poolOperationStartedAt = CACurrentMediaTime();
     BOOL poolKeyPresent = _poolKey.length > 0;
     RNCWebIslandSlotRecord *record = RNCWebIslandSlot(_poolKey);
-    NSString *requestedDocumentFamily = RNCWebIslandDocumentFamily(_poolDocumentFamily);
-    if (record == nil || requestedDocumentFamily == nil) {
+    NSArray<NSString *> *documentFamilies = RNCWebIslandDocumentFamilies(_poolDocumentFamilies);
+    NSString *requestedDocumentFamily = RNCWebIslandDocumentFamily(_poolDocumentFamily, documentFamilies);
+    if (record == nil || requestedDocumentFamily == nil || _poolDocumentKey.length == 0) {
       RNCWebIslandSlotRecord *invalidRecord = [RNCWebIslandSlotRecord new];
       invalidRecord.slotId = record != nil ? record.slotId : (poolKeyPresent ? @"invalid" : @"missing");
       invalidRecord.documentFamily = requestedDocumentFamily ?: @"unknown";
@@ -771,7 +787,7 @@ RCTAutoInsetsProtocol>
         self, @"capacity_violation", poolKeyPresent, NO, NO, NO,
         invalidRecord, @"unknown", NO, NO, poolOperationStartedAt
       );
-      RCTLogError(@"[WebIslands] rejected missing or invalid slot/family");
+      RCTLogError(@"[WebIslands] rejected missing or invalid slot/document configuration");
       return;
     }
     BOOL priorSeenKey = record.allocationGeneration > 0;
@@ -1310,11 +1326,14 @@ RCTAutoInsetsProtocol>
   NSString *compatibilityKey = candidate[@"compatibilityKey"];
   NSString *propsRevision = candidate[@"propsRevision"];
   NSDictionary *envelope = candidate[@"envelope"];
+  NSArray<NSString *> *documentFamilies = RNCWebIslandDocumentFamilies(_poolDocumentFamilies);
+  NSString *requestedDocumentFamily = RNCWebIslandDocumentFamily(_poolDocumentFamily, documentFamilies);
   BOOL stringsValid =
     [identifier isKindOfClass:[NSString class]] && identifier.length > 0 &&
     [activationKey isKindOfClass:[NSString class]] && activationKey.length > 0 &&
-    [documentKey isKindOfClass:[NSString class]] && [documentKey hasPrefix:@"/threads/"] &&
-    [compatibilityKey isKindOfClass:[NSString class]] && [compatibilityKey isEqualToString:@"thread"] &&
+    [documentKey isKindOfClass:[NSString class]] && [documentKey isEqualToString:_poolDocumentKey] &&
+    [compatibilityKey isKindOfClass:[NSString class]] && requestedDocumentFamily != nil &&
+    [compatibilityKey isEqualToString:requestedDocumentFamily] &&
     [propsRevision isKindOfClass:[NSString class]] && propsRevision.length == 71 &&
     [propsRevision hasPrefix:@"sha256:"];
   if (!stringsValid || ![envelope isKindOfClass:[NSDictionary class]] ||
