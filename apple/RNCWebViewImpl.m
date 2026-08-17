@@ -66,6 +66,12 @@ static NSMutableDictionary<NSString *, RNCWebIslandSlotRecord *> *RNCWebIslandSl
   return slots;
 }
 
+#if !TARGET_OS_OSX
+static void RNCWebIslandsSetAccessibilityHidden(WKWebView *webView, BOOL hidden) {
+  webView.accessibilityElementsHidden = hidden;
+}
+#endif
+
 static RNCWebIslandSlotRecord *RNCWebIslandSlot(NSString *slotId) {
   return slotId.length > 0 ? RNCWebIslandSlots()[slotId] : nil;
 }
@@ -185,8 +191,8 @@ NSDictionary *RNCWebIslandSlotBindingDictionary(NSString *slotId) {
 // values are supplied and validated per view rather than compiled here.
 NSDictionary *RNCWebIslandRuntimeCapabilitiesDictionary(void) {
   return @{
-    @"runtimeVersion": @"acp-rnw-14.0.1-owned.2",
-    @"poolProtocol": @{ @"major": @1, @"minor": @1 },
+    @"runtimeVersion": @"acp-rnw-14.0.1-owned.3",
+    @"poolProtocol": @{ @"major": @1, @"minor": @2 },
     @"capacity": @2,
     @"features": @[
       @"pin_aware_lru",
@@ -194,6 +200,7 @@ NSDictionary *RNCWebIslandRuntimeCapabilitiesDictionary(void) {
       @"generation_gated_paint",
       @"webcontent_generation",
       @"app_configured_compatibility_keys",
+      @"parked_accessibility_hidden",
     ],
   };
 }
@@ -853,6 +860,9 @@ RCTAutoInsetsProtocol>
       _webView.allowsLinkPreview = _allowsLinkPreview;
       _webView.allowsBackForwardNavigationGestures = _allowsBackForwardNavigationGestures;
       [self setBackgroundColor:_savedBackgroundColor];
+#if !TARGET_OS_OSX
+      RNCWebIslandsSetAccessibilityHidden(_webView, NO);
+#endif
       [self addSubview:_webView];
 
       if (documentFamilyChanged) {
@@ -978,6 +988,9 @@ RCTAutoInsetsProtocol>
       _webView.inspectable = _webviewDebuggingEnabled;
 #endif
 
+#if !TARGET_OS_OSX
+    RNCWebIslandsSetAccessibilityHidden(_webView, NO);
+#endif
     [self addSubview:_webView];
     [self setHideKeyboardAccessoryView: _savedHideKeyboardAccessoryView];
     [self setKeyboardDisplayRequiresUserAction: _savedKeyboardDisplayRequiresUserAction];
@@ -1051,6 +1064,9 @@ RCTAutoInsetsProtocol>
     record.parked = YES;
     record.presentationState = @"parked";  // gh337: releases the presentation pin.
     record.lastUseOrdering = ++RNCWebIslandsUseOrdering;
+#if !TARGET_OS_OSX
+    RNCWebIslandsSetAccessibilityHidden(_webView, YES);
+#endif
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
     [_webView.configuration.userContentController removeScriptMessageHandlerForName:MessageHandlerName];
     [_webView removeObserver:self forKeyPath:@"estimatedProgress"];
