@@ -21,6 +21,13 @@ FOUNDATION_EXPORT NSDictionary *_Nullable RNCWebIslandSlotBindingDictionary(NSSt
 /// families supplied through each WebView's pool props).
 FOUNDATION_EXPORT NSDictionary *RNCWebIslandRuntimeCapabilitiesDictionary(void);
 
+#if DEBUG
+/// Invokes the WebKit reset-state selector against the exact retained view for
+/// one fixed slot. Successful results contain the captured slot generations
+/// and presentation state. Failures contain one bounded `errorCode` string.
+FOUNDATION_EXPORT NSDictionary *RNCWebIslandTerminateWebContentForTest(NSString *slotId);
+#endif
+
 NS_ASSUME_NONNULL_END
 
 #endif /* RNCWebIslandRuntimeSupport_h */

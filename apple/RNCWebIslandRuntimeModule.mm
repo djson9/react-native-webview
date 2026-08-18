@@ -35,7 +35,13 @@ RCT_EXPORT_MODULE(RNCWebIslandRuntime)
 // Capabilities are immutable constants, so they are also exported as module
 // constants for the negotiator's synchronous read path.
 - (NSDictionary *)constantsToExport {
-  return @{ @"capabilities": RNCWebIslandRuntimeCapabilitiesDictionary() };
+  NSMutableDictionary *constants = [@{
+    @"capabilities": RNCWebIslandRuntimeCapabilitiesDictionary(),
+  } mutableCopy];
+#if DEBUG
+  constants[@"testSupportVersion"] = @1;
+#endif
+  return constants;
 }
 
 // Immutable capability block (async form, safe under bridgeless interop).
@@ -62,6 +68,23 @@ RCT_EXPORT_METHOD(getBindings:(RCTPromiseResolveBlock)resolve
   }
   resolve(out);
 }
+
+#if DEBUG
+// Test-only WebContent fault injection. The owned slot registry performs all
+// validation and delivery coordination so consumers never retain WKWebViews or
+// forward WebKit callbacks themselves.
+RCT_EXPORT_METHOD(terminateWebContentForTest:(NSString *)slotId
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject) {
+  NSDictionary *result = RNCWebIslandTerminateWebContentForTest(slotId);
+  NSString *errorCode = result[@"errorCode"];
+  if (errorCode != nil) {
+    reject(errorCode, errorCode, nil);
+    return;
+  }
+  resolve(result);
+}
+#endif
 
 // Debug/telemetry probe that exercises the pure pin-aware LRU decision core in
 // the shipped binary (Debug and Release), proving the safety invariants hold for

@@ -42,6 +42,17 @@ static NSString *const MessageHandlerName = @"ReactNativeWebView";
 // revoked). Advertised to JS through RNCWebIslandRuntimeModule.getBinding.
 @property (nonatomic, copy, nullable) NSString *presentationState;
 @property (nonatomic, assign) BOOL parked;
+#if DEBUG
+// One supported fault per fixed slot and process. The pending target is the
+// exact retained WKWebView that received the selector, including while parked.
+@property (nonatomic, assign) BOOL testTerminationUsed;
+@property (nonatomic, strong, nullable) WKWebView *testTerminationPendingTarget;
+@property (nonatomic, assign) BOOL testTerminationForcesSyntheticDelivery;
+// A synthetic delivery can race one late organic callback. Suppress only that
+// callback for this exact target and only within the bounded deadline.
+@property (nonatomic, weak, nullable) WKWebView *testTerminationSuppressionTarget;
+@property (nonatomic, assign) CFTimeInterval testTerminationSuppressionDeadline;
+#endif
 @end
 
 @implementation RNCWebIslandSlotRecord
@@ -75,6 +86,85 @@ static void RNCWebIslandsSetAccessibilityHidden(WKWebView *webView, BOOL hidden)
 static RNCWebIslandSlotRecord *RNCWebIslandSlot(NSString *slotId) {
   return slotId.length > 0 ? RNCWebIslandSlots()[slotId] : nil;
 }
+
+#if DEBUG
+@interface RNCWebViewImpl (WebIslandTestSupport)
+- (void)islandDeliverTestContentProcessTermination:(WKWebView *)webView;
+@end
+
+static RNCWebIslandSlotRecord *RNCWebIslandSlotForWebView(WKWebView *webView) {
+  if (webView == nil) return nil;
+  for (RNCWebIslandSlotRecord *record in RNCWebIslandSlots().allValues) {
+    if (record.webView == webView) return record;
+  }
+  return nil;
+}
+
+static BOOL RNCWebIslandForceSyntheticTermination(NSString *slotId) {
+  NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
+  NSUInteger index = [arguments indexOfObject:@"-WebIslandTestForceSyntheticTermination"];
+  return index != NSNotFound && index + 1 < arguments.count &&
+    [arguments[index + 1] isEqualToString:slotId];
+}
+
+static void RNCWebIslandClearTerminationSuppression(
+  RNCWebIslandSlotRecord *record,
+  WKWebView *target,
+  CFTimeInterval deadline
+) {
+  if (record.testTerminationSuppressionTarget == target &&
+      record.testTerminationSuppressionDeadline == deadline) {
+    record.testTerminationSuppressionTarget = nil;
+    record.testTerminationSuppressionDeadline = 0;
+  }
+}
+
+static void RNCWebIslandArmTerminationSuppression(
+  RNCWebIslandSlotRecord *record,
+  WKWebView *target
+) {
+  CFTimeInterval deadline = CACurrentMediaTime() + 2.0;
+  record.testTerminationSuppressionTarget = target;
+  record.testTerminationSuppressionDeadline = deadline;
+  dispatch_after(
+    dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+    dispatch_get_main_queue(),
+    ^{
+      RNCWebIslandClearTerminationSuppression(record, target, deadline);
+    }
+  );
+}
+
+static BOOL RNCWebIslandConsumeNaturalTerminationIfNeeded(WKWebView *webView) {
+  RNCWebIslandSlotRecord *record = RNCWebIslandSlotForWebView(webView);
+  if (record == nil) return NO;
+
+  if (record.testTerminationPendingTarget == webView) {
+    if (record.testTerminationForcesSyntheticDelivery) return YES;
+    record.testTerminationPendingTarget = nil;
+    record.testTerminationForcesSyntheticDelivery = NO;
+    return NO;
+  }
+
+  if (record.testTerminationSuppressionTarget == webView) {
+    BOOL insideBound = CACurrentMediaTime() <= record.testTerminationSuppressionDeadline;
+    record.testTerminationSuppressionTarget = nil;
+    record.testTerminationSuppressionDeadline = 0;
+    if (insideBound) return YES;
+  }
+  return NO;
+}
+
+static void RNCWebIslandDeliverPendingTestTermination(RNCWebIslandSlotRecord *record) {
+  WKWebView *target = record.testTerminationPendingTarget;
+  RNCWebViewImpl *owner = record.owner;
+  if (target == nil || owner == nil || record.webView != target) return;
+  record.testTerminationPendingTarget = nil;
+  record.testTerminationForcesSyntheticDelivery = NO;
+  RNCWebIslandArmTerminationSuppression(record, target);
+  [owner islandDeliverTestContentProcessTermination:target];
+}
+#endif
 
 static NSArray<NSString *> *RNCWebIslandDocumentFamilies(id value) {
   if (![value isKindOfClass:[NSArray class]]) return nil;
@@ -206,6 +296,79 @@ NSDictionary *RNCWebIslandRuntimeCapabilitiesDictionary(void) {
 }
 
 #if DEBUG
+static NSDictionary *RNCWebIslandTestTerminationError(NSString *code) {
+  return @{ @"errorCode": code };
+}
+
+static NSDictionary *RNCWebIslandTerminateWebContentForTestOnMain(NSString *slotId) {
+  if (![slotId isKindOfClass:[NSString class]] ||
+      !([slotId isEqualToString:@"slot-a"] || [slotId isEqualToString:@"slot-b"])) {
+    return RNCWebIslandTestTerminationError(@"invalid_slot");
+  }
+
+  RNCWebIslandSlotRecord *record = RNCWebIslandSlot(slotId);
+  WKWebView *target = record.webView;
+  if (target == nil || record.allocationGeneration == 0 || record.leaseGeneration == 0) {
+    return RNCWebIslandTestTerminationError(@"unallocated_slot");
+  }
+  if (record.testTerminationUsed) {
+    return RNCWebIslandTestTerminationError(@"already_injected");
+  }
+  record.testTerminationUsed = YES;
+
+  SEL selector = NSSelectorFromString(@"_killWebContentProcessAndResetState");
+  if (![target respondsToSelector:selector]) {
+    return RNCWebIslandTestTerminationError(@"selector_unavailable");
+  }
+
+  NSDictionary *binding = RNCWebIslandSlotBindingDictionary(slotId);
+  NSDictionary *result = @{
+    @"slotId": slotId,
+    @"allocationGeneration": binding[@"allocationGeneration"],
+    @"leaseGeneration": binding[@"leaseGeneration"],
+    @"presentationState": binding[@"presentationState"],
+  };
+  record.testTerminationPendingTarget = target;
+  record.testTerminationForcesSyntheticDelivery = RNCWebIslandForceSyntheticTermination(slotId);
+
+  @try {
+    IMP implementation = [target methodForSelector:selector];
+    if (implementation == NULL) {
+      record.testTerminationPendingTarget = nil;
+      record.testTerminationForcesSyntheticDelivery = NO;
+      return RNCWebIslandTestTerminationError(@"selector_unavailable");
+    }
+    ((void (*)(id, SEL))implementation)(target, selector);
+  } @catch (NSException *exception) {
+    record.testTerminationPendingTarget = nil;
+    record.testTerminationForcesSyntheticDelivery = NO;
+    RCTLogWarn(@"[WebIslands] DEBUG WebContent termination selector failed: %@", exception.name);
+    return RNCWebIslandTestTerminationError(@"selector_failed");
+  }
+
+  // Focused views always receive one ordinary package callback by the next
+  // main-queue turn if WebKit did not deliver its organic callback first.
+  if (record.owner != nil) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      RNCWebIslandDeliverPendingTestTermination(record);
+    });
+  }
+  // Parked views retain the pending target until normal reattachment installs
+  // an owner and delegate; that path calls the same delivery helper.
+  return result;
+}
+
+NSDictionary *RNCWebIslandTerminateWebContentForTest(NSString *slotId) {
+  if (NSThread.isMainThread) {
+    return RNCWebIslandTerminateWebContentForTestOnMain(slotId);
+  }
+  __block NSDictionary *result = nil;
+  dispatch_sync(dispatch_get_main_queue(), ^{
+    result = RNCWebIslandTerminateWebContentForTestOnMain(slotId);
+  });
+  return result;
+}
+
 static NSString *RNCWebIslandsProbeMode(void) {
   NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
   NSUInteger index = [arguments indexOfObject:@"-ACPWebIslandPoolProbe"];
@@ -843,6 +1006,9 @@ RCTAutoInsetsProtocol>
       record.presentationState = @"incoming";
       _webView = warmWebView;
       _webView.frame = self.bounds;
+#if DEBUG
+      _webView.accessibilityIdentifier = self.accessibilityIdentifier;
+#endif
       [_webView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
       [_webView.configuration.userContentController removeScriptMessageHandlerForName:MessageHandlerName];
       @try {
@@ -898,11 +1064,19 @@ RCTAutoInsetsProtocol>
         NO,
         poolOperationStartedAt
       );
+#if DEBUG
+      // Pool telemetry is posted before recovery starts, preserving the
+      // documented parked ordering: reattach -> ordinary recovery chain.
+      RNCWebIslandDeliverPendingTestTermination(record);
+#endif
       RCTLogWarn(@"[WebIslands] reattached slot=%@ family=%@", record.slotId, record.documentFamily);
       return;
     }
     WKWebViewConfiguration *wkWebViewConfig = [self setUpWkWebViewConfig];
     _webView = [[RNCWKWebView alloc] initWithFrame:self.bounds configuration: wkWebViewConfig];
+#if DEBUG
+    _webView.accessibilityIdentifier = self.accessibilityIdentifier;
+#endif
     BOOL replacement = record.allocationGeneration > 0;
     NSString *previousDocumentFamily = record.documentFamily ?: @"unknown";
     record.owner = self;
@@ -2004,13 +2178,29 @@ RCTAutoInsetsProtocol>
  * Called when the web view's content process is terminated.
  * @see https://developer.apple.com/documentation/webkit/wknavigationdelegate/1455639-webviewwebcontentprocessdidtermi?language=objc
  */
-- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView
+#if DEBUG
+- (void)islandDeliverTestContentProcessTermination:(WKWebView *)webView
 {
   RCTLogWarn(@"Webview Process Terminated");
   if (_onContentProcessDidTerminate) {
     NSMutableDictionary<NSString *, id> *event = [self baseEvent];
     _onContentProcessDidTerminate(event);
   }
+}
+#endif
+
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView
+{
+#if DEBUG
+  if (RNCWebIslandConsumeNaturalTerminationIfNeeded(webView)) return;
+  [self islandDeliverTestContentProcessTermination:webView];
+#else
+  RCTLogWarn(@"Webview Process Terminated");
+  if (_onContentProcessDidTerminate) {
+    NSMutableDictionary<NSString *, id> *event = [self baseEvent];
+    _onContentProcessDidTerminate(event);
+  }
+#endif
 }
 
 /**

@@ -551,6 +551,12 @@ static inline std::string nullSafeStringWithLength(id value) {
     [_view setSource:source];
 
     [super updateProps:props oldProps:oldProps];
+#if DEBUG
+    // React Native applies testID to the Fabric component wrapper. Mirror it
+    // into RNCWebViewImpl so the pooled WKWebView can expose the documented
+    // identifier as an XCUIElementTypeWebView instead of an ancestor Other.
+    _view.accessibilityIdentifier = self.accessibilityIdentifier;
+#endif
 }
 
 - (void)handleCommand:(nonnull const NSString *)commandName args:(nonnull const NSArray *)args {
