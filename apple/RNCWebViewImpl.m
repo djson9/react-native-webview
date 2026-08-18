@@ -1006,6 +1006,9 @@ RCTAutoInsetsProtocol>
       record.presentationState = @"incoming";
       _webView = warmWebView;
       _webView.frame = self.bounds;
+#if DEBUG
+      _webView.accessibilityIdentifier = self.accessibilityIdentifier;
+#endif
       [_webView.configuration.userContentController removeScriptMessageHandlerForName:HistoryShimName];
       [_webView.configuration.userContentController removeScriptMessageHandlerForName:MessageHandlerName];
       @try {
@@ -1071,6 +1074,9 @@ RCTAutoInsetsProtocol>
     }
     WKWebViewConfiguration *wkWebViewConfig = [self setUpWkWebViewConfig];
     _webView = [[RNCWKWebView alloc] initWithFrame:self.bounds configuration: wkWebViewConfig];
+#if DEBUG
+    _webView.accessibilityIdentifier = self.accessibilityIdentifier;
+#endif
     BOOL replacement = record.allocationGeneration > 0;
     NSString *previousDocumentFamily = record.documentFamily ?: @"unknown";
     record.owner = self;
